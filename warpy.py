@@ -5,6 +5,8 @@ from scipy.interpolate import LinearNDInterpolator as interp
 from scipy.optimize import fmin, minimize, anneal
 from scipy.spatial import KDTree
 import pyfits
+from scipy.stats import nanmedian
+from multiprocessing import Pool
 
 def ifilter_mag(iterable):
     ##-- filter only star matches that are within 0.25 mags of each other
@@ -23,7 +25,7 @@ def match( xv1, xv2 ):
     dxy = numpy.asarray( dxy ).T    
     tree = KDTree( dxy.T )
     tree_xy = KDTree( xv1[:,0:2] )
-    print 'trees built - correlating...'
+    #print 'trees built - correlating...'
     
     N = map( lambda x: len( tree.query_ball_point( x, 5.0 ) ), dxy.T )
     x = numpy.argmax(N)
@@ -38,15 +40,20 @@ def match( xv1, xv2 ):
     return numpy.asarray(xv1ret), numpy.asarray(xv2ret)
 
 
-def get_data( ims ):
+def get_data( ims_in, exten=1 ):
     ##-- Uses Pyxtractor (source extractor plugin) to extract high-sig
     ##-- sources from two images.
-    
+    ims = []
+    for im in ims_in:
+        ims.append( '%s\'[%s]\''%(im, exten))
+
+        
     T = pyx()
     T.params = ['XWIN_IMAGE', 'YWIN_IMAGE', 'MAG_AUTO', 'FLAGS', 'FWHM_IMAGE']
-    T.options[ 'DETECT_THRESH' ] = 500
+    T.options[ 'DETECT_THRESH' ] = 200
     T.getcat( ims )
     T.cleanup()
+    
     xy1, xy2 = [],[]
 
     OK1 = numpy.where( (T.catalog[ims[0]]['FLAGS']<4)*(T.catalog[ims[0]]['FWHM_IMAGE'] > 3) )
@@ -66,7 +73,7 @@ def get_data( ims ):
 def remap( Xi, Yi, params):
     X = Xi - max(Xi)*0.5
     Y = Yi - max(Yi)*0.5
-
+    
     ZXx = params[0:3]
     ZXy = params[3:6]
     ZYx = params[6:9]
@@ -85,7 +92,6 @@ def interpmap( xsamp, ysamp, xin, yin, zref ):
 
 
 def ffunc( params, x1, y1, x2, y2 ):
-
     xf, yf = remap( x1, y1, params )
     dr = numpy.sort( (xf - x2)**2 + (yf-y2)**2 )
     ### crude outlier rejection: remove worst 2 points  
@@ -101,43 +107,40 @@ def computemap( xstars1, ystars1, xstars2, ystars2 ):
                 0.0, 0.0, 0.0, ##-- Yx
                 0.0, 1.0, dy ] ##-- Yy
 
-    print 'optimizing...'
-    params1 = fmin( ffunc, params0, args=( xstars1, ystars1, xstars2, ystars2, ), maxiter=1000 )
+    #print 'optimizing...'
+    params1 = fmin( ffunc, params0, args=( xstars1, ystars1, xstars2, ystars2, ), maxiter=1000, disp=False )
     
-    print
-    print 'Solution:'
-    print 'scale     X %.4f Y %.4f'%( params1[1], params1[10] )
-    print 'offset    X %.4f Y %.4f'%( params1[2], params1[11] )
-    print 'start off X %.4f Y %.4f'%( dx, dy )
-    print
-    print
-    
+    #print
+    #print 'Solution:'
+    #print 'scale     X %.4f Y %.4f'%( params1[1], params1[10] )
+    #print 'offset    X %.4f Y %.4f'%( params1[2], params1[11] )
+    #print 'start off X %.4f Y %.4f'%( dx, dy )
+    #print
+        
     return params1
 
 
-def warp2ref( imlist ):
-    
+def warp2ref( imlist, exten=1 ):
+
+    return_ims = []
     for im in imlist:
 
         ##-- open image to be matched
         h1 = pyfits.open(im)
-        orig_im = h1[0].data
+        orig_im = h1[exten].data
         h1.close()
 
-        os.system('cp %s %s_masksubmedian.fits'%(im, im))
-
-
         delta_arr = []
-        mask_arr = []
+        #mask_arr = []
         for im2 in imlist:
             if im2 == im:
                 continue
 
-            print
+            #print
             print 'Preparing to warp %s to %s...'%(im2, im)
             ##-- open image to be warped
             h1 = pyfits.open(im2)
-            a = h1[0].data
+            a = h1[exten].data
             h1.close()
             
             b = numpy.indices( a.shape ) + 1 ##-- source extractor convention?
@@ -150,13 +153,13 @@ def warp2ref( imlist ):
             a[b[1] == mv[1]] = 0
             
             ##-- collect matched star list 
-            xva, xvb = get_data( [im2, im] )
+            xva, xvb = get_data( [im2, im], exten=exten )
 
             ##-- fit warp to matched star list
             params = computemap( xva.T[0], xva.T[1], xvb.T[0], xvb.T[1])
 
             ##-- warp image
-            print 'Warping...'
+            #print 'Warping...'
             Y, X = b[0].ravel(), b[1].ravel()
             X2, Y2 = remap( X, Y, params=params)
 
@@ -173,27 +176,117 @@ def warp2ref( imlist ):
             print 'MEDIAN SKY OFFSET = %.1f counts'%(delta_median)
             
             diff_im -= delta_median
-            diff_im[mask1] = 0.0
+            diff_im[mask1] = numpy.nan
+            delta_arr.append( diff_im )
             
-            ##-- write out corrected difference
-            #hdu = pyfits.PrimaryHDU( diff_im - delta_median )
-            #hdu.writeto( '%s_minus_%s.fits'%(im, im2) )
+        final_im = nanmedian( numpy.asarray( delta_arr ), axis=0 )
+        final_im[ numpy.isnan( final_im ) ] = 0
+        final_im[ abs(final_im) > 100000 ] = 0
 
-            #print '%s_minus_%s.fits written.'%(im, im2)
-
-            delta_arr.append( diff_im - delta_median )
-            mask_arr.append( V3 >= 0.0 )
-            
-        delta_arr = numpy.asarray( delta_arr )
-        mask_arr = numpy.asarray( mask_arr )
-
-        masked_data = numpy.ma.array( delta_arr, mask=mask_arr )
-        final_im = numpy.ma.MaskedArray.filled( numpy.ma.median( masked_data, axis=0 ), 0 )
-
-        h2 = pyfits.open('%s_masksubmedian.fits'%(im), mode='update')
-        h2[0].data = final_im
+        h2 = pyfits.open('nostars/%s'%(im), mode='update')
+        h2[exten].data = final_im
         h2.flush()
 
-imlist = ['tt1.fits', 'tt2.fits', 'tt3.fits','tt4.fits', 'tt5.fits']
 
-warp2ref( imlist )
+def warp2ref1( imlist ):
+
+    extens = [1,4]
+    im = imlist[0]
+    
+    for exten in extens:
+
+        ##-- open image to be matched
+        h1 = pyfits.open(im)
+        orig_im = h1[exten].data
+        h1.close()
+
+        delta_arr = []
+        #mask_arr = []
+        for im2 in imlist[1]:
+            if im2 == im:
+                continue
+
+            ##-- open image to be warped
+            h1 = pyfits.open(im2)
+            a = h1[exten].data
+            h1.close()
+            
+            b = numpy.indices( a.shape ) + 1 ##-- source extractor convention?
+            mv = a.shape
+
+            ##-- zeroing edge pixel to mask edges in interpolation
+            a[b[0] == 1] = 0
+            a[b[1] == 1] = 0
+            a[b[0] == mv[0]] = 0
+            a[b[1] == mv[1]] = 0
+            
+            ##-- collect matched star list 
+            xva, xvb = get_data( [im2, im], exten=exten )
+
+            ##-- fit warp to matched star list
+            params = computemap( xva.T[0], xva.T[1], xvb.T[0], xvb.T[1])
+
+            ##-- warp image
+            Y, X = b[0].ravel(), b[1].ravel()
+            X2, Y2 = remap( X, Y, params=params)
+
+            V2 = interpmap( X, Y, X2, Y2, a.ravel() )
+            V3 = numpy.reshape( V2, a.shape )
+
+            ##-- compute difference image and mask regions
+            diff_im = orig_im - V3
+            mask1 = numpy.where( V3 == 0.0 )
+            mask2 = numpy.where( V3 > 0.0 )
+
+            ##-- fix any obvious offsets.
+            delta_median =  numpy.median( diff_im[mask2] )
+            
+            diff_im -= delta_median
+            
+            diff_im[mask1] = numpy.nan
+            delta_arr.append( diff_im )
+            
+        final_im = nanmedian( numpy.asarray( delta_arr ), axis=0 )
+        final_im[ numpy.isnan( final_im ) ] = 0
+        final_im[ abs(final_im) > 100000 ] = 0
+
+        h2 = pyfits.open('nostars/%s'%(im), mode='update')
+        h2[exten].data = final_im
+        h2.flush()
+
+        
+if __name__ == "__main__":
+    
+    imlist_name = sys.argv[1]
+    FILE = open(imlist_name, 'r')
+    imlist_in = FILE.readlines()
+    FILE.close()
+
+    if not os.path.isdir('nostars'):
+        print 'Making nostars directory'
+        os.system('mkdir nostars')
+    
+    imlist = []
+    
+    for k in imlist_in:
+        if k[0] == '#' or len(k.strip().split()) > 1 or k.strip().split('.')[-1].lower() != 'fits' or k.strip() == '':
+            continue
+        
+        imlist.append( k.strip() )
+        os.system('cp %s nostars/%s'%(k.strip(), k.strip()))
+
+    imlist_subproc = []
+    for im in imlist:
+        imlist_subproc.append( [ im, imlist ] )
+
+    #chip1 = warp2ref( imlist, exten=1 )
+    #chip2 = warp2ref( imlist, exten=4 )
+
+    Ndown = len(imlist)
+
+    print 'Starting %s processes.'%( Ndown )
+    
+    pool = Pool(processes=Ndown)
+    result = pool.map_async( warp2ref1, imlist_subproc )
+    pool.close()
+    pool.join()
