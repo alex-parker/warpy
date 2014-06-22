@@ -187,7 +187,7 @@ def warp2ref( imlist ):
         delta_arr = numpy.asarray( delta_arr )
         mask_arr = numpy.asarray( mask_arr )
 
-        masked_data = numpy.ma.asarray( delta_arr, mask=mask_arr )
+        masked_data = numpy.ma.array( delta_arr, mask=mask_arr )
         final_im = numpy.ma.MaskedArray.filled( numpy.ma.median( masked_data, axis=0 ), 0 )
 
         h2 = pyfits.open('%s_masksubmedian.fits'%(im), mode='update')
