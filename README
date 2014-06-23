@@ -1,5 +1,11 @@
 Warpy: Warp a list of HST WFC3 _flt images to each other and produce difference images for each entry in the list.
 
+REQUIRES:
+	- Source Extractor must be installed
+	- Recent versions of Numpy and Scipy
+	- PyXtractor: https://github.com/alex-parker/PyXtractor
+
+
 Input: text list “INPUT” of _flt images.
 Output:
 	- subdirectory “nostars” is created.
