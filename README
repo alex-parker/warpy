@@ -1,0 +1,40 @@
+Warpy: Warp a list of HST WFC3 _flt images to each other and produce difference images for each entry in the list.
+
+Input: text list “INPUT” of _flt images.
+Output:
+	- subdirectory “nostars” is created.
+	- “nostars” is populated with copies of _flt images listed in “INPUT.”
+	- Upon completion of warpy processing, the “nostars” copies have extensions 1 and 4 replaced with difference images.
+
+
+Processing:
+
+Overview:
+Each image IM in the list is processed separately as a reference, and all other images are warped to match IM’s geometry (with respect to the stars) and subtracted from IM.
+
+These difference images are combined with a (masked) median, and this median difference image is the difference image copied to the “nostars” directory’s copy of IM.
+
+Co-registration:
+
+For a target image IM and an image wIM to be warped to IM’s geometry,
+
+	- [x,y] locations of stars in IM and wIM are extracted with Source Extractor (pyxtractor).
+	- A simple pattern-matching algorithm is run to identify a matched list of [x,y]_IM, [x,y]_wIM.
+
+Warping:
+	- A degree 2 polynomial (with no cross terms) is fit that maps [x,y]_wIM to [x,y]_IM. At the moment this is done with an amoeba-like algorithm; in the future this should be switched to some matrix math. Very simple outlier rejection at this point.
+	- The pixels of wIM are mapped into IM using this polynomial. They are interpolated with scipy’s LinearNDInterpolator and sampled at the mid-points of the pixel locations of IM. Subsampling was not noticeably helpful, so single samples are used.
+
+Differencing:
+	- Given IM and a list of N warped wIMs, N difference images are generated, masked, and medianed. The mask ensures that no pixels with no information are used in the median process. This is accomplished with scipy nanmedian.
+	- This median difference is stored in the “nostars” copy of IM.
+
+
+Multiprocessing:
+	- For a list of N images, N processes are generated using map_async. At the moment, there is a lot of data that is held in memory at certain points in the processing, and the architecture may have to be changed in future versions to reduce this memory load.
+
+
+
+
+
+
